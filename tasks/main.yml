@@ -1,0 +1,4 @@
+---
+- include_tasks: check_cert_update.yml
+  when: acme_check_cert_update_done is not defined
+

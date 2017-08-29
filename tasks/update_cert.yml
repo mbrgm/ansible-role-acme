@@ -1,0 +1,172 @@
+---
+- name: collect_alt_names
+  set_fact:
+    alt_names: "{{ alt_names | default([]) }} + [ 'DNS:{{ item }}' ]"
+  with_items: "{{ acme_urls }}"
+
+- name: install_packages
+  package:
+    name: python-openssl
+    state: latest
+
+- name: create_remote_dir
+  file:
+    path: "{{ acme_remote_dir }}"
+    state: directory
+
+- name: generate_key
+  openssl_privatekey:
+    path: "{{ acme_remote_key_path }}"
+    size: 2048
+  notify: reload_nginx
+
+- name: generate_csr
+  openssl_csr:
+    path: "{{ acme_remote_csr_path }}"
+    privatekey_path: "{{ acme_remote_key_path }}"
+    commonName: "{{ acme_cn }}"
+    countryName: "{{ acme_country }}"
+    localityName: "{{ acme_locality }}"
+    organizationName: "{{ acme_organization }}"
+    stateOrProvinceName: "{{ acme_state }}"
+    subjectAltName: "{{ ','.join(alt_names) }}"
+
+- name: create_local_dir
+  delegate_to: localhost
+  file:
+    path: "{{ acme_local_dir }}"
+    state: directory
+
+- name: fetch_csr
+  fetch:
+    src: "{{ acme_remote_csr_path }}"
+    dest: "{{ acme_local_csr_path }}"
+    flat: True
+
+- name: generate_acme_account_key
+  delegate_to: localhost
+  openssl_privatekey:
+    path: "{{ acme_account_key_path }}"
+    size: 2048
+
+- name: request_challenge
+  delegate_to: localhost
+  letsencrypt:
+    account_email: "{{ acme_email }}"
+    account_key: "{{ acme_account_key_path }}"
+    csr: "{{ acme_local_csr_path }}"
+    dest: "{{ acme_local_cert_path }}"
+    challenge: dns-01
+    acme_directory: "{{ acme_api_endpoint }}/directory"
+  register: challenge
+
+- name: create_challenge_record
+  delegate_to: localhost
+  cloudflare_dns:
+    zone: "{{ base_domain }}"
+    record: "{{ challenge.challenge_data[item]['dns-01']['resource'] }}.{{ item }}"
+    type: TXT
+    solo: True
+    value: "{{ challenge.challenge_data[item]['dns-01']['resource_value'] }}"
+    ttl: 120
+    account_email: "{{ cloudflare_email }}"
+    account_api_token: "{{ cloudflare_api_token }}"
+  when: challenge.changed
+  with_items: "{{ challenge.challenge_data.keys() }}"
+
+- name: wait_for_dns_record_to_take_place
+  pause:
+    seconds: 120
+  when: challenge.changed
+
+- name: validate_challenge
+  delegate_to: localhost
+  letsencrypt:
+    account_email: "{{ acme_email }}"
+    account_key: "{{ acme_account_key_path }}"
+    csr: "{{ acme_local_csr_path }}"
+    dest: "{{ acme_local_cert_path }}"
+    challenge: dns-01
+    acme_directory: "{{ acme_api_endpoint }}/directory"
+    data: "{{ challenge }}"
+  when: challenge.changed
+
+- name: cleanup_challenge_records
+  delegate_to: localhost
+  cloudflare_dns:
+    state: absent
+    zone: "{{ base_domain }}"
+    record: "{{ challenge.challenge_data[item]['dns-01']['resource'] }}.{{ item }}"
+    account_email: "{{ cloudflare_email }}"
+    account_api_token: "{{ cloudflare_api_token }}"
+  # TODO: Make them work without challenge having changed
+  when: challenge.changed
+  with_items: "{{ challenge.challenge_data.keys() }}"
+
+- name: get_cert_serial
+  delegate_to: localhost
+  shell: >-
+    openssl x509 -in {{ acme_local_cert_path }} -serial -noout
+    | sed 's/^serial=//'
+  register: cert_serial
+  # TODO: Make idempotent
+
+- name: get_http_header
+  delegate_to: localhost
+  shell: >-
+    curl -I -s "{{ acme_api_endpoint }}/acme/cert/{{ cert_serial.stdout }}" -o "{{ acme_local_header_path }}"
+  when: cert_serial.changed
+
+- name: get_cert_issuer_link
+  delegate_to: localhost
+  shell: >-
+    grep -P '^Link: ' "{{ acme_local_header_path }}"
+    | sed -e 's/^Link: <//; s/>;rel="up"\s*$//'
+  register: cert_issuer_link
+  when: cert_serial.changed
+
+- name: get_issuer_cert
+  delegate_to: localhost
+  get_url:
+    url: "{{ cert_issuer_link.stdout }}"
+    dest: "{{ acme_local_issuer_cert_der_path }}"
+  # TODO: Make idempotent
+  when: cert_issuer_link.changed
+
+- name: base64_encode_issuer_cert
+  delegate_to: localhost
+  command: openssl base64 -e -in {{ acme_local_issuer_cert_der_path }}
+  register: issuer_cert_base64
+  # TODO: Make idempotent
+  when: cert_issuer_link.changed
+
+- name: write_issuer_cert_pem
+  delegate_to: localhost
+  copy:
+    dest: "{{ acme_local_issuer_cert_pem_path }}"
+    content: |
+      -----BEGIN CERTIFICATE-----
+      {{ issuer_cert_base64.stdout }}
+      -----END CERTIFICATE-----
+  when: issuer_cert_base64.changed
+
+- name: build_fullchain_pem
+  delegate_to: localhost
+  shell: >
+    cat
+    {{ acme_local_cert_path }}
+    {{ acme_local_issuer_cert_pem_path }}
+    > {{ acme_local_fullchain_path }}
+  when: issuer_cert_base64.changed
+
+- name: copy_cert_to_remote_host
+  copy:
+    dest: "{{ acme_remote_cert_path }}"
+    src: "{{ acme_local_cert_path }}"
+  notify: reload_nginx
+
+- name: copy_fullchain_to_remote_host
+  copy:
+    dest: "{{ acme_remote_fullchain_path }}"
+    src: "{{ acme_local_fullchain_path }}"
+  notify: reload_nginx

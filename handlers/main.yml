@@ -1,0 +1,4 @@
+---
+- name: update_cert
+  listen: update_acme_cert
+  include_tasks: update_cert.yml

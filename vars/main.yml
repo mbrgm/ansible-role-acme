@@ -1,0 +1,31 @@
+---
+letsencrypt_staging_endpoint: https://acme-staging.api.letsencrypt.org
+letsencrypt_production_endpoint: https://acme-v01.api.letsencrypt.org
+
+acme_api_endpoints:
+  dev: "{{ letsencrypt_staging_endpoint }}"
+  stage: "{{ letsencrypt_staging_endpoint }}"
+  prod: "{{ letsencrypt_production_endpoint }}"
+
+acme_api_endpoint: "{{ acme_api_endpoints[env] }}"
+
+acme_cn: "{{ ansible_fqdn }}"
+
+acme_local_root_dir: "{{ inventory_dir }}/acme"
+
+acme_account_key_path: "{{ acme_local_root_dir }}/account.key"
+
+acme_local_dir: "{{ acme_local_root_dir }}/{{ acme_cn }}"
+acme_local_cert_path: "{{ acme_local_dir }}/cert.pem"
+acme_local_csr_path: "{{ acme_local_dir }}/csr.pem"
+acme_local_fullchain_path: "{{ acme_local_dir }}/fullchain.pem"
+acme_local_header_path: "{{ acme_local_dir }}/http.header"
+acme_local_issuer_cert_der_path: "{{ acme_local_dir }}/issuer_cert.der"
+acme_local_issuer_cert_pem_path: "{{ acme_local_dir }}/issuer_cert.pem"
+
+acme_remote_dir: "{{ acme_dir }}"
+acme_remote_cert_path: "{{ acme_remote_dir }}/cert.pem"
+acme_remote_csr_path: "{{ acme_remote_dir }}/csr.pem"
+acme_remote_fullchain_path: "{{ acme_remote_dir }}/fullchain.pem"
+acme_remote_key_path: "{{ acme_remote_dir }}/key.pem"
+

@@ -1,0 +1,19 @@
+---
+- name: collect_acme_urls
+  set_fact:
+    acme_urls: "{{ (acme_urls | default([ansible_fqdn])) + [ hostvars[inventory_hostname][item].acme_url ] }}"
+  when: hostvars[inventory_hostname][item] is defined and hostvars[inventory_hostname][item].acme_url is defined
+  with_items: "{{ group_names }}"
+
+- name: get_subject_alt_names
+  script: files/get_subject_alt_names.sh "{{ acme_remote_cert_path }}"
+  register: subject_alt_names
+  ignore_errors: True
+  changed_when: False
+
+- include_tasks: update_cert.yml
+  when: subject_alt_names.stdout_lines != (acme_urls | sort | unique)
+
+- set_fact:
+    acme_check_cert_update_done: True
+
